@@ -59,11 +59,11 @@ jobs:
 
       - name: Install NDK via SDK Manager
         run: |
-          set -euxo pipefail
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;${NDK_VERSION}"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;${NDK_VERSION}" || true
           ln -sfn "$ANDROID_HOME/ndk/${NDK_VERSION}" "$GITHUB_WORKSPACE/.ndk"
-          test -x "$NDK_BIN/clang"
+          test -x "$NDK_BIN/clang" || { echo "::error::NDK 安装失败，clang 不可执行"; exit 1; }
           file "$NDK_BIN/clang"
+          readlink -f "$NDK_BIN/clang"
 
       - name: Prepare workspace
         run: |
@@ -230,10 +230,11 @@ jobs:
 
       - name: Install NDK via SDK Manager
         run: |
-          set -euxo pipefail
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;${NDK_VERSION}"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;${NDK_VERSION}" || true
           ln -sfn "$ANDROID_HOME/ndk/${NDK_VERSION}" "$GITHUB_WORKSPACE/.ndk"
-          test -x "$NDK_BIN/clang"
+          test -x "$NDK_BIN/clang" || { echo "::error::NDK 安装失败，clang 不可执行"; exit 1; }
+          file "$NDK_BIN/clang"
+          readlink -f "$NDK_BIN/clang"
 
       - name: Download deps artifact
         uses: actions/download-artifact@v4
