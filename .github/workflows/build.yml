@@ -1,0 +1,441 @@
+name: build-php-android
+
+on:
+  workflow_dispatch:
+    inputs:
+      php_version:
+        description: "PHP version (e.g. 8.5.12)"
+        required: true
+        default: "8.5.12"
+      libxml2_version:
+        description: "libxml2 version"
+        required: true
+        default: "2.15.4"
+      zlib_version:
+        description: "zlib version"
+        required: true
+        default: "1.3.2"
+      pcre2_version:
+        description: "PCRE2 version"
+        required: true
+        default: "10.44"
+      openssl_version:
+        description: "OpenSSL version (LTS)"
+        required: true
+        default: "3.5.9"
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: "27.3.13750724"
+  ANDROID_API: "24"
+  NDK_ROOT: "${{ github.workspace }}/.ndk"
+  NDK_BIN: "${{ github.workspace }}/.ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+jobs:
+  deps:
+    name: deps-${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            triple: aarch64-linux-android
+            openssl_target: android-arm64
+          - abi: x86_64
+            triple: x86_64-linux-android
+            openssl_target: android-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake perl curl file binutils wget xz-utils
+
+      - name: Install NDK via SDK Manager
+        run: |
+          set -euxo pipefail
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;${NDK_VERSION}"
+          ln -sfn "$ANDROID_HOME/ndk/${NDK_VERSION}" "$GITHUB_WORKSPACE/.ndk"
+          test -x "$NDK_BIN/clang"
+          file "$NDK_BIN/clang"
+
+      - name: Prepare workspace
+        run: |
+          set -euxo pipefail
+          echo "SRC=$RUNNER_TEMP/src" >> $GITHUB_ENV
+          echo "DEPS=$RUNNER_TEMP/deps" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$GITHUB_WORKSPACE/.ndk" >> $GITHUB_ENV
+          mkdir -p "$RUNNER_TEMP/src" "$RUNNER_TEMP/deps"
+
+      # ---------------- libxml2 2.15.4 ----------------
+      - name: Fetch libxml2
+        run: |
+          set -euxo pipefail
+          cd "$SRC"
+          V="${{ inputs.libxml2_version }}"
+          MM=$(echo "$V" | awk -F. '{print $1"."$2}')
+          curl -fSL -o libxml2.tar.xz \
+            "https://download.gnome.org/sources/libxml2/${MM}/libxml2-${V}.tar.xz"
+          tar xf libxml2.tar.xz
+
+      - name: Build libxml2.a
+        run: |
+          set -euxo pipefail
+          V="${{ inputs.libxml2_version }}"
+          cmake -S "$SRC/libxml2-${V}" -B build-libxml2 \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-${ANDROID_API} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$DEPS" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLIBXML2_WITH_PYTHON=OFF \
+            -DLIBXML2_WITH_LZMA=OFF \
+            -DLIBXML2_WITH_ICONV=OFF \
+            -DLIBXML2_WITH_ZLIB=OFF \
+            -DLIBXML2_WITH_TESTS=OFF
+          cmake --build build-libxml2 --parallel "$(nproc)"
+          cmake --install build-libxml2
+
+      # ---------------- zlib 1.3.2 ----------------
+      - name: Fetch zlib
+        run: |
+          set -euxo pipefail
+          cd "$SRC"
+          V="${{ inputs.zlib_version }}"
+          curl -fSL -o zlib.tar.gz \
+            "https://github.com/madler/zlib/releases/download/v${V}/zlib-${V}.tar.gz"
+          tar xf zlib.tar.gz
+
+      - name: Build zlib.a
+        run: |
+          set -euxo pipefail
+          V="${{ inputs.zlib_version }}"
+          cmake -S "$SRC/zlib-${V}" -B build-zlib \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-${ANDROID_API} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$DEPS" \
+            -DZLIB_BUILD_EXAMPLES=OFF
+          cmake --build build-zlib --parallel "$(nproc)"
+          cmake --install build-zlib
+
+      # ---------------- PCRE2 10.44 ----------------
+      - name: Fetch PCRE2
+        run: |
+          set -euxo pipefail
+          cd "$SRC"
+          V="${{ inputs.pcre2_version }}"
+          curl -fSL -o pcre2.tar.gz \
+            "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${V}/pcre2-${V}.tar.gz"
+          tar xf pcre2.tar.gz
+
+      - name: Build PCRE2.a
+        run: |
+          set -euxo pipefail
+          V="${{ inputs.pcre2_version }}"
+          cmake -S "$SRC/pcre2-${V}" -B build-pcre2 \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-${ANDROID_API} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$DEPS" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DPCRE2_BUILD_PCRE2_8=ON \
+            -DPCRE2_BUILD_PCRE2_16=OFF \
+            -DPCRE2_BUILD_PCRE2_32=OFF \
+            -DPCRE2_BUILD_TESTS=OFF \
+            -DPCRE2_SUPPORT_JIT=OFF
+          cmake --build build-pcre2 --parallel "$(nproc)"
+          cmake --install build-pcre2
+
+      # ---------------- OpenSSL 3.5.9 (LTS) ----------------
+      - name: Fetch OpenSSL
+        run: |
+          set -euxo pipefail
+          cd "$SRC"
+          V="${{ inputs.openssl_version }}"
+          curl -fSL -o openssl.tar.gz \
+            "https://github.com/openssl/openssl/releases/download/openssl-${V}/openssl-${V}.tar.gz"
+          tar xf openssl.tar.gz
+
+      - name: Build OpenSSL.a (libssl.a + libcrypto.a)
+        run: |
+          set -euxo pipefail
+          V="${{ inputs.openssl_version }}"
+          cd "$SRC/openssl-${V}"
+          perl ./Configure ${{ matrix.openssl_target }} \
+            --prefix="$DEPS" \
+            --openssldir="$DEPS/ssl" \
+            --libdir=lib \
+            no-shared no-tests no-engine no-dso \
+            -D__ANDROID_API__=${ANDROID_API} \
+            -fPIC
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Verify deps
+        run: |
+          set -euxo pipefail
+          echo "=== 产物 ==="
+          find "$DEPS" -type f \( -name '*.a' -o -name '*.pc' -o -name '*.h' \) | sort | head -60
+          echo "=== 静态库架构 ==="
+          for lib in libxml2 libz libpcre2-8 libssl libcrypto; do
+            "$NDK_BIN/llvm-objdump" -f "$DEPS/lib/${lib}.a" 2>/dev/null \
+              | grep -E 'file format|architecture' | head -2 || true
+          done
+
+      - name: Pack deps
+        run: |
+          set -euxo pipefail
+          tar -czf "$RUNNER_TEMP/deps-${{ matrix.abi }}.tar.gz" -C "$DEPS" .
+          ls -lh "$RUNNER_TEMP/deps-${{ matrix.abi }}.tar.gz"
+
+      - name: Upload deps
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-${{ matrix.abi }}
+          path: ${{ runner.temp }}/deps-${{ matrix.abi }}.tar.gz
+          if-no-files-found: error
+
+  php:
+    name: php-${{ matrix.abi }}
+    needs: deps
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            triple: aarch64-linux-android
+          - abi: x86_64
+            triple: x86_64-linux-android
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf bison re2c pkg-config \
+            curl file binutils wget xz-utils
+
+      - name: Install NDK via SDK Manager
+        run: |
+          set -euxo pipefail
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;${NDK_VERSION}"
+          ln -sfn "$ANDROID_HOME/ndk/${NDK_VERSION}" "$GITHUB_WORKSPACE/.ndk"
+          test -x "$NDK_BIN/clang"
+
+      - name: Download deps artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deps-${{ matrix.abi }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack deps + prepare env
+        run: |
+          set -euxo pipefail
+          echo "SRC=$RUNNER_TEMP/src" >> $GITHUB_ENV
+          echo "DEPS=$RUNNER_TEMP/deps" >> $GITHUB_ENV
+          mkdir -p "$RUNNER_TEMP/src" "$RUNNER_TEMP/deps"
+          tar -xzf "$RUNNER_TEMP/deps-${{ matrix.abi }}.tar.gz" -C "$DEPS"
+          ls "$DEPS"/lib/*.a
+          ls "$DEPS"/lib/pkgconfig/
+
+      - name: Fetch PHP source
+        run: |
+          set -euxo pipefail
+          cd "$SRC"
+          V="${{ inputs.php_version }}"
+          # php.net 分发 tarball；若该版本尚未分发，回退到 GitHub tag
+          if curl -fSL --retry 3 -o php.tar.gz \
+              "https://www.php.net/distributions/php-${V}.tar.gz"; then
+            echo "✅ 从 php.net 下载"
+          else
+            echo "⚠️ php.net 无 ${V}，回退 GitHub tag"
+            curl -fSL -o php.tar.gz \
+              "https://github.com/php/php-src/archive/refs/tags/php-${V}.tar.gz"
+          fi
+          tar xf php.tar.gz
+          PHP_SRC=$(find . -maxdepth 1 -type d -name 'php-*' | head -1)
+          echo "PHP_SRC=$SRC/${PHP_SRC#./}" >> $GITHUB_ENV
+          echo "PHP 源码目录: $PHP_SRC"
+
+      # ---------------- 汇编钉子（复用 nginx 那份 Base64） ----------------
+      - name: Build TLS alignment pin
+        run: |
+          set -euxo pipefail
+          CC="$NDK_BIN/${{ matrix.triple }}${ANDROID_API}-clang"
+          echo "LnNlY3Rpb24gLnRkYXRhLCJhd1QiLEBwcm9nYml0cwouYmFsaWduIDY0Ci5nbG9ibCBfX2FuZHJvaWRfdGxzX2FsaWduZXIKLnR5cGUgX19hbmRyb2lkX3Rsc19hbGlnbmVyLCBAb2JqZWN0Cl9fYW5kcm9pZF90bHNfYWxpZ25lcjoKICAgIC56ZXJvIDEKLnNpemUgX19hbmRyb2lkX3Rsc19hbGlnbmVyLCAxCi5wcmV2aW91cw==" \
+            | base64 -d > /tmp/crtandroidtls.S
+          "$CC" -c /tmp/crtandroidtls.S -o /tmp/crtandroidtls.o
+          "$NDK_BIN/llvm-readelf" -s /tmp/crtandroidtls.o | grep android_tls_aligner
+          "$NDK_BIN/llvm-readelf" -S /tmp/crtandroidtls.o | grep tdata
+
+      # ---------------- configure PHP ----------------
+      - name: Configure PHP
+        run: |
+          set -euxo pipefail
+          cd "$PHP_SRC"
+          TRIPLE=${{ matrix.triple }}
+          CC="$NDK_BIN/${TRIPLE}${ANDROID_API}-clang"
+          CXX="$NDK_BIN/${TRIPLE}${ANDROID_API}-clang++"
+
+          export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$DEPS/lib/pkgconfig"
+          export PKG_CONFIG_SYSROOT_DIR="$DEPS"
+
+          ./configure \
+            --host="$TRIPLE" \
+            --build=x86_64-pc-linux-gnu \
+            --prefix=/data/data/com.php.app/php \
+            --disable-all \
+            --enable-cli \
+            --disable-cgi \
+            --disable-phpdbg \
+            --disable-zts \
+            --without-pear \
+            --with-libxml \
+            --with-zlib="$DEPS" \
+            --with-external-pcre="$DEPS" \
+            --with-openssl="$DEPS" \
+            --enable-dom \
+            --enable-simplexml \
+            --enable-xml \
+            --enable-xmlreader \
+            --enable-xmlwriter \
+            --enable-filter \
+            --enable-ctype \
+            --enable-tokenizer \
+            --with-config-file-path=/data/data/com.php.app/php/etc \
+            CC="$CC" \
+            CXX="$CXX" \
+            CFLAGS="-O2 -fPIC -fno-strict-aliasing" \
+            CPPFLAGS="-I$DEPS/include -I$DEPS/include/libxml2" \
+            LDFLAGS="-static-pie -Wl,-z,max-page-size=16384 \
+                     -Wl,--undefined=__android_tls_aligner \
+                     /tmp/crtandroidtls.o \
+                     -L$DEPS/lib" \
+            PKG_CONFIG=/usr/bin/pkg-config \
+            ac_cv_func_fork_works=yes \
+            ac_cv_func_posix_getpwuid_r=yes \
+            ac_cv_func_posix_getgrgid_r=yes \
+            ac_cv_pthreads_working=yes \
+            ac_cv_func_dlopen=no \
+            ac_cv_lib_dl_dlopen=no \
+            php_cv_phpdbg_cv=no \
+            2>&1 | tee /tmp/php-configure.log
+
+          [ -f Makefile ] || { echo "::error::configure 失败"; tail -120 /tmp/php-configure.log; exit 1; }
+          echo "✅ configure 完成"
+
+      # ---------------- 清掉 NDK 里不存在的库 ----------------
+      # NDK 下 pthread/dl/rt 符号都在 libc 里，-lpthread/-ldl/-lrt 会硬找 .a
+      - name: Strip -lpthread / -ldl / -lrt from Makefiles
+        run: |
+          set -euxo pipefail
+          cd "$PHP_SRC"
+          find . -name 'Makefile' -print0 | xargs -0 --no-run-if-empty \
+            sed -i -E 's/(^|[[:space:]])-l(pthread|dl|rt)([[:space:]]|$)/\1\3/g'
+          grep -rn -- '-lpthread\|-ldl\|-lrt' . --include='Makefile' || echo "(clean)"
+
+      # ---------------- build ----------------
+      - name: Build PHP
+        run: |
+          set -euxo pipefail
+          cd "$PHP_SRC"
+          make -j"$(nproc)" 2>&1 | tee /tmp/php-build.log
+
+      # ---------------- verify ----------------
+      - name: Verify static-pie + 新 G 标
+        run: |
+          set -euxo pipefail
+          PHP_BIN="$PHP_SRC/sapi/cli/php"
+          [ -f "$PHP_BIN" ] || { echo "::error::php 不存在"; exit 1; }
+          "$NDK_BIN/llvm-strip" --strip-unneeded "$PHP_BIN"
+          file "$PHP_BIN"
+
+          "$NDK_BIN/llvm-readelf" -l "$PHP_BIN" | grep -q INTERP \
+            || { echo "::error::缺 PT_INTERP"; exit 1; }
+          NEEDED=$("$NDK_BIN/llvm-readelf" -d "$PHP_BIN" | grep -c NEEDED || true)
+          [ "$NEEDED" -eq 0 ] || { "$NDK_BIN/llvm-readelf" -d "$PHP_BIN" | grep NEEDED; exit 1; }
+
+          LOAD_ALIGN=$("$NDK_BIN/llvm-readelf" -l "$PHP_BIN" | awk '/LOAD/{print $NF; exit}')
+          TLS_ALIGN=$("$NDK_BIN/llvm-readelf" -l "$PHP_BIN" | awk '/TLS/{print $NF; exit}')
+          [ "$LOAD_ALIGN" = "0x4000" ] || { echo "::error::LOAD=$LOAD_ALIGN"; exit 1; }
+          [ "$TLS_ALIGN" = "0x40" ] || { echo "::error::TLS=$TLS_ALIGN"; exit 1; }
+
+          echo "✅ PT_INTERP 存在、DT_NEEDED=0、LOAD=0x4000、TLS=0x40"
+          "$NDK_BIN/llvm-readelf" -l "$PHP_BIN" | grep -E 'LOAD|TLS|INTERP'
+
+      - name: Show PHP version (x86_64 only, best-effort)
+        if: matrix.abi == 'x86_64'
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          sudo apt-get install -y qemu-user-static
+          qemu-x86_64-static "$PHP_SRC/sapi/cli/php" -v || echo "::warning::qemu 执行失败"
+
+      - name: Pack PHP
+        run: |
+          set -euxo pipefail
+          V="${{ inputs.php_version }}"
+          STAGE="$RUNNER_TEMP/stage"
+          mkdir -p "$STAGE/bin" "$STAGE/etc"
+          cp "$PHP_SRC/sapi/cli/php" "$STAGE/bin/php"
+          cat > "$STAGE/etc/php.ini" <<'EOF'
+          memory_limit = 256M
+          error_reporting = E_ALL
+          display_errors = On
+          date.timezone = UTC
+          EOF
+          tar -czf "$RUNNER_TEMP/php-${V}-${{ matrix.abi }}.tar.gz" -C "$STAGE" .
+          ls -lh "$RUNNER_TEMP"/php-*.tar.gz
+
+      - name: Upload PHP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ inputs.php_version }}-${{ matrix.abi }}
+          path: ${{ runner.temp }}/php-${{ inputs.php_version }}-${{ matrix.abi }}.tar.gz
+          if-no-files-found: error
+
+      - name: Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: php-${{ inputs.php_version }}
+          name: PHP ${{ inputs.php_version }} (Android ${{ matrix.abi }})
+          body: |
+            Static-pie PHP CLI ${{ inputs.php_version }} for Android (${{ matrix.abi }}).
+
+            Deps (all static):
+            - libxml2 ${{ inputs.libxml2_version }}
+            - zlib ${{ inputs.zlib_version }}
+            - PCRE2 ${{ inputs.pcre2_version }} (external)
+            - OpenSSL ${{ inputs.openssl_version }} (LTS)
+
+            NDK r27c (API 24, via sdkmanager) + TLS alignment pin.
+
+            Properties: static-pie (PT_INTERP present, DT_NEEDED=0),
+            LOAD p_align=0x4000, TLS p_align=0x40.
+
+            Contents: `bin/php`, `etc/php.ini`
+          files: ${{ runner.temp }}/php-${{ inputs.php_version }}-${{ matrix.abi }}.tar.gz
+          draft: false
+          prerelease: false
+          overwrite_files: true
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          tail -150 /tmp/php-configure.log 2>/dev/null || true
+          tail -150 /tmp/php-build.log 2>/dev/null || true
+          find "$RUNNER_TEMP/src" -maxdepth 4 -name config.log -print -exec tail -100 {} \; 2>/dev/null || true
